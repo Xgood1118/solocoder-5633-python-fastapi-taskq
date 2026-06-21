@@ -57,6 +57,9 @@ class TaskStore:
 
     def submit(self, req: TaskSubmit) -> TaskModel:
         with self._lock:
+            for dep_id in req.depends_on:
+                if dep_id not in self._tasks:
+                    raise ValueError(f"Dependency task {dep_id} does not exist")
             now = datetime.now()
             task = TaskModel(
                 task_id=str(uuid.uuid4()),
@@ -89,6 +92,8 @@ class TaskStore:
             for t in self._tasks.values():
                 if t.status != TaskStatus.QUEUED:
                     continue
+                if t.cron_expr or t.interval_seconds:
+                    continue
                 if not self._dependencies_met(t):
                     continue
                 ready.append(t)
@@ -102,11 +107,18 @@ class TaskStore:
             self._save()
         return task
 
+    def is_cancelled(self, task_id: str) -> bool:
+        with self._lock:
+            t = self._tasks.get(task_id)
+            return t is not None and t.status == TaskStatus.CANCELLED
+
     async def complete(self, task_id: str, result: Any = None) -> TaskModel | None:
         with self._lock:
             task = self._tasks.get(task_id)
             if not task:
                 return None
+            if task.status == TaskStatus.CANCELLED:
+                return task
             task.status = TaskStatus.COMPLETED
             task.finished_at = datetime.now()
             task.result = result
@@ -119,6 +131,8 @@ class TaskStore:
             task = self._tasks.get(task_id)
             if not task:
                 return None
+            if task.status == TaskStatus.CANCELLED:
+                return task
             task.error_message = error
             task.retry_count += 1
             if task.retry_count >= task.max_retries:
@@ -148,10 +162,13 @@ class TaskStore:
     async def cancel(self, task_id: str) -> TaskModel | None:
         with self._lock:
             task = self._tasks.get(task_id)
-            if not task or task.status not in (TaskStatus.QUEUED, TaskStatus.RETRYING):
+            if not task:
                 return None
-            task.status = TaskStatus.DEAD
+            if task.status not in (TaskStatus.QUEUED, TaskStatus.RETRYING, TaskStatus.RUNNING):
+                return None
+            task.status = TaskStatus.CANCELLED
             task.finished_at = datetime.now()
+            task.error_message = "Cancelled by user"
             self._save()
         await self._emit({"event": "task_cancelled", "task": task.model_dump(mode="json")})
         return task
@@ -240,7 +257,7 @@ class TaskStore:
         with self._worker_lock:
             return list(self._workers.values())
 
-    def remove_stale_workers(self, timeout_seconds: int = 30) -> None:
+    def remove_stale_workers(self, timeout_seconds: int = 30) -> list[str]:
         now = datetime.now()
         with self._worker_lock:
             stale = [
@@ -250,6 +267,48 @@ class TaskStore:
             ]
             for wid in stale:
                 del self._workers[wid]
+        return stale
+
+    def recover_orphaned_tasks(self, worker_ids: list[str]) -> int:
+        if not worker_ids:
+            return 0
+        count = 0
+        now = datetime.now()
+        with self._lock:
+            for t in self._tasks.values():
+                if t.status == TaskStatus.RUNNING and t.worker_id in worker_ids:
+                    t.status = TaskStatus.QUEUED
+                    t.worker_id = None
+                    t.started_at = None
+                    t.error_message = f"Recovered after worker {t.worker_id} crashed"
+                    t.retry_count = min(t.retry_count + 1, t.max_retries)
+                    if t.retry_count >= t.max_retries:
+                        t.status = TaskStatus.DEAD
+                        t.finished_at = now
+                    count += 1
+            if count:
+                self._save()
+        return count
+
+    def check_orphaned_dependencies(self) -> int:
+        count = 0
+        now = datetime.now()
+        with self._lock:
+            for t in self._tasks.values():
+                if t.status != TaskStatus.QUEUED or not t.depends_on:
+                    continue
+                for dep_id in t.depends_on:
+                    dep = self._tasks.get(dep_id)
+                    if dep is None or dep.status in (TaskStatus.DEAD, TaskStatus.FAILED, TaskStatus.CANCELLED):
+                        t.status = TaskStatus.DEAD
+                        t.finished_at = now
+                        reason = f"Dependency {dep_id} " + ("not found" if dep is None else f"is {dep.status.value}")
+                        t.error_message = reason
+                        count += 1
+                        break
+            if count:
+                self._save()
+        return count
 
     def cleanup_expired(self, max_age_hours: int = 72) -> int:
         now = datetime.now()
@@ -257,7 +316,7 @@ class TaskStore:
             expired = [
                 tid
                 for tid, t in self._tasks.items()
-                if t.status in (TaskStatus.COMPLETED, TaskStatus.DEAD)
+                if t.status in (TaskStatus.COMPLETED, TaskStatus.DEAD, TaskStatus.CANCELLED)
                 and t.finished_at
                 and (now - t.finished_at).total_seconds() > max_age_hours * 3600
             ]

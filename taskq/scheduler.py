@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from croniter import croniter
 
-from .models import TaskSubmit, Priority
+from .models import TaskSubmit, Priority, TaskStatus
 from .store import TaskStore
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,6 @@ class Scheduler:
         self.store = store
         self.tick_interval = tick_interval
         self._running = False
-        self._schedule_cache: dict[str, datetime] = {}
 
     async def start(self) -> None:
         self._running = True
@@ -36,7 +35,14 @@ class Scheduler:
     async def _tick(self) -> None:
         await self._process_retries()
         await self._process_scheduled()
-        self.store.remove_stale_workers(timeout_seconds=30)
+        stale_workers = self.store.remove_stale_workers(timeout_seconds=30)
+        if stale_workers:
+            recovered = self.store.recover_orphaned_tasks(stale_workers)
+            if recovered:
+                logger.info("Recovered %d orphaned tasks from dead workers: %s", recovered, stale_workers)
+        orphaned = self.store.check_orphaned_dependencies()
+        if orphaned:
+            logger.info("Marked %d tasks as dead due to missing/failed dependencies", orphaned)
         self.store.cleanup_expired(max_age_hours=72)
 
     async def _process_retries(self) -> None:
@@ -55,28 +61,29 @@ class Scheduler:
         for t in all_tasks:
             if not t.cron_expr and not t.interval_seconds:
                 continue
-            if t.status not in (
-                "queued",
-                "completed",
-            ):
+            if t.status not in (TaskStatus.QUEUED, TaskStatus.COMPLETED):
                 continue
             should_run = False
             if t.interval_seconds:
-                if t.next_run_at and now >= t.next_run_at:
+                if t.next_run_at is None:
+                    t.next_run_at = now + timedelta(seconds=t.interval_seconds)
+                    continue
+                if now >= t.next_run_at:
                     should_run = True
                     t.next_run_at = now + timedelta(seconds=t.interval_seconds)
             elif t.cron_expr:
-                cached = self._schedule_cache.get(t.task_id)
-                if cached and now >= cached:
-                    should_run = True
-                if t.next_run_at is None or should_run:
-                    try:
+                try:
+                    if t.next_run_at is None:
                         cron = croniter(t.cron_expr, now)
                         t.next_run_at = cron.get_next(datetime)
-                        self._schedule_cache[t.task_id] = t.next_run_at
-                    except Exception as e:
-                        logger.error("Invalid cron %s: %s", t.cron_expr, e)
                         continue
+                    if now >= t.next_run_at:
+                        should_run = True
+                        cron = croniter(t.cron_expr, t.next_run_at)
+                        t.next_run_at = cron.get_next(datetime)
+                except Exception as e:
+                    logger.error("Invalid cron %s: %s", t.cron_expr, e)
+                    continue
             if should_run:
                 req = TaskSubmit(
                     task_type=t.task_type,

@@ -1,3 +1,5 @@
+import asyncio
+
 from taskq.app import create_app
 from taskq.worker import task
 
@@ -24,3 +26,14 @@ def sync_data(params: dict):
     source = params.get("source", "default")
     print(f"[sync_data] Syncing from {source}")
     return {"synced": True, "source": source}
+
+
+@task("slow_job")
+async def slow_job(params: dict):
+    duration = params.get("seconds", 5)
+    print(f"[slow_job] Starting slow job for {duration}s...")
+    for i in range(duration):
+        await asyncio.sleep(1)
+        print(f"[slow_job] ... {i+1}s")
+    print(f"[slow_job] Completed")
+    return {"slept": duration}

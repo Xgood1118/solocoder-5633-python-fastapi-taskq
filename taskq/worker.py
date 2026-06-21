@@ -79,13 +79,25 @@ class Worker:
             self.store.worker_completed(self.worker_id, False)
             return
         try:
+            if self.store.is_cancelled(t.task_id):
+                logger.info("Worker %s task %s was cancelled before execution", self.worker_id, t.task_id)
+                self.store.worker_completed(self.worker_id, False)
+                return
             result = handler(t.params)
             if asyncio.iscoroutine(result):
                 result = await result
+            if self.store.is_cancelled(t.task_id):
+                logger.info("Worker %s task %s was cancelled during execution", self.worker_id, t.task_id)
+                self.store.worker_completed(self.worker_id, False)
+                return
             await self.store.complete(t.task_id, result)
             self.store.worker_completed(self.worker_id, True)
             logger.info("Worker %s completed task %s", self.worker_id, t.task_id)
         except Exception as e:
+            if self.store.is_cancelled(t.task_id):
+                logger.info("Worker %s task %s was cancelled during execution", self.worker_id, t.task_id)
+                self.store.worker_completed(self.worker_id, False)
+                return
             logger.error("Worker %s task %s failed: %s", self.worker_id, t.task_id, e)
             await self.store.fail(t.task_id, str(e))
             self.store.worker_completed(self.worker_id, False)

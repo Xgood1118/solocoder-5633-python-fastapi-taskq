@@ -47,7 +47,10 @@ async def _sse_callback(event: dict) -> None:
 @router.post("/tasks", status_code=201)
 async def submit_task(req: TaskSubmit) -> dict[str, Any]:
     store = _get_store()
-    t = await store.submit_and_emit(req)
+    try:
+        t = await store.submit_and_emit(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return t.model_dump(mode="json")
 
 
@@ -56,8 +59,11 @@ async def batch_submit(body: BatchSubmit) -> dict[str, Any]:
     store = _get_store()
     tasks = []
     for req in body.tasks:
-        t = await store.submit_and_emit(req)
-        tasks.append(t.model_dump(mode="json"))
+        try:
+            t = await store.submit_and_emit(req)
+            tasks.append(t.model_dump(mode="json"))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     return {"created": len(tasks), "tasks": tasks}
 
 
@@ -92,7 +98,7 @@ async def cancel_task(task_id: str) -> dict[str, Any]:
     store = _get_store()
     t = await store.cancel(task_id)
     if not t:
-        raise HTTPException(status_code=400, detail="Cannot cancel task (not in queued/retrying state)")
+        raise HTTPException(status_code=400, detail="Cannot cancel task (not in queued/retrying/running state)")
     return t.model_dump(mode="json")
 
 
