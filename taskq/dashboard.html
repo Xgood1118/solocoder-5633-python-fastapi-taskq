@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskQ Dashboard</title>
+<style>
+:root {
+  --bg: #0f172a; --surface: #1e293b; --border: #334155;
+  --text: #e2e8f0; --muted: #94a3b8; --primary: #3b82f6;
+  --success: #22c55e; --warning: #f59e0b; --danger: #ef4444;
+  --purple: #a855f7; --cyan: #06b6d4;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+.header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+.header h1 { font-size: 20px; font-weight: 700; }
+.header h1 span { color: var(--primary); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+.status-dot.connected { background: var(--success); }
+.status-dot.disconnected { background: var(--danger); }
+.toolbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.toolbar input, .toolbar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+.toolbar input { width: 240px; }
+.toolbar button { background: var(--primary); color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+.toolbar button:hover { opacity: 0.9; }
+.toolbar button.danger { background: var(--danger); }
+.main { display: grid; grid-template-columns: 1fr 320px; gap: 0; min-height: calc(100vh - 110px); }
+.task-panel { padding: 16px; overflow-y: auto; max-height: calc(100vh - 110px); }
+.side-panel { background: var(--surface); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; max-height: calc(100vh - 110px); }
+.section-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px; }
+.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+.stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center; }
+.stat-card .num { font-size: 24px; font-weight: 700; }
+.stat-card .label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.stat-card.queued .num { color: var(--primary); }
+.stat-card.running .num { color: var(--warning); }
+.stat-card.completed .num { color: var(--success); }
+.stat-card.failed .num { color: var(--danger); }
+.stat-card.retrying .num { color: var(--purple); }
+.stat-card.dead .num { color: var(--danger); }
+canvas { width: 100% !important; height: 160px !important; margin-bottom: 16px; }
+.task-list { display: flex; flex-direction: column; gap: 8px; }
+.task-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; cursor: default; animation: slideIn 0.3s ease; }
+@keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.task-card .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.task-card .task-type { font-weight: 600; font-size: 14px; }
+.task-card .task-id { font-size: 11px; color: var(--muted); font-family: monospace; }
+.badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
+.badge.queued { background: rgba(59,130,246,0.15); color: var(--primary); }
+.badge.running { background: rgba(245,158,11,0.15); color: var(--warning); }
+.badge.completed { background: rgba(34,197,94,0.15); color: var(--success); }
+.badge.failed { background: rgba(239,68,68,0.15); color: var(--danger); }
+.badge.retrying { background: rgba(168,85,247,0.15); color: var(--purple); }
+.badge.dead { background: rgba(239,68,68,0.2); color: var(--danger); }
+.badge.low { background: rgba(148,163,184,0.15); color: var(--muted); }
+.badge.normal { background: rgba(59,130,246,0.15); color: var(--primary); }
+.badge.high { background: rgba(245,158,11,0.15); color: var(--warning); }
+.badge.urgent { background: rgba(239,68,68,0.15); color: var(--danger); }
+.task-card .meta { font-size: 12px; color: var(--muted); }
+.task-card .actions { margin-top: 8px; display: flex; gap: 6px; }
+.task-card .actions button { font-size: 11px; padding: 4px 10px; border-radius: 4px; border: none; cursor: pointer; font-weight: 500; }
+.btn-cancel { background: rgba(239,68,68,0.15); color: var(--danger); }
+.btn-retry { background: rgba(168,85,247,0.15); color: var(--purple); }
+.btn-cancel:hover, .btn-retry:hover { opacity: 0.8; }
+.worker-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.worker-card .wid { font-weight: 600; font-size: 13px; }
+.worker-card .wmeta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.tab-bar { display: flex; gap: 0; margin-bottom: 16px; }
+.tab-bar button { background: transparent; color: var(--muted); border: none; border-bottom: 2px solid transparent; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
+.tab-bar button.active { color: var(--primary); border-bottom-color: var(--primary); }
+.empty { text-align: center; color: var(--muted); padding: 40px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>⚡ <span>TaskQ</span> Dashboard</h1>
+  <div><span class="status-dot" id="sseStatus"></span><span id="sseLabel" style="font-size:13px;color:var(--muted)">Connecting...</span></div>
+</div>
+<div class="toolbar">
+  <input id="searchBox" placeholder="Search tasks..." oninput="loadTasks()">
+  <select id="filterStatus" onchange="loadTasks()">
+    <option value="">All Status</option>
+    <option value="queued">Queued</option>
+    <option value="running">Running</option>
+    <option value="completed">Completed</option>
+    <option value="failed">Failed</option>
+    <option value="retrying">Retrying</option>
+    <option value="dead">Dead</option>
+  </select>
+  <button onclick="loadTasks()">Refresh</button>
+  <button onclick="showSubmitModal()" style="background:var(--success)">+ Submit Task</button>
+</div>
+<div class="main">
+  <div class="task-panel">
+    <div class="tab-bar">
+      <button class="active" onclick="switchTab('tasks',this)">Tasks</button>
+      <button onclick="switchTab('dead',this)">Dead Letters</button>
+    </div>
+    <div id="taskList" class="task-list"></div>
+  </div>
+  <div class="side-panel">
+    <div class="section-title">Statistics</div>
+    <div class="stats-grid" id="statsGrid"></div>
+    <canvas id="chartCanvas"></canvas>
+    <div class="section-title" style="margin-top:8px">Workers</div>
+    <div id="workerList"></div>
+    <div class="section-title" style="margin-top:16px">Registered Types</div>
+    <div id="registryList" style="font-size:12px;color:var(--muted)"></div>
+  </div>
+</div>
+
+<div id="submitModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:480px;max-width:90vw">
+    <h3 style="margin-bottom:16px">Submit New Task</h3>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <input id="mType" placeholder="Task type (e.g. send_email)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px">
+      <textarea id="mParams" placeholder='{"to":"user@example.com"}' rows="3" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;resize:vertical"></textarea>
+      <select id="mPriority" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px">
+        <option value="normal">Normal</option>
+        <option value="low">Low</option>
+        <option value="high">High</option>
+        <option value="urgent">Urgent</option>
+      </select>
+      <input id="mCorrelation" placeholder="Correlation ID (optional)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px">
+      <input id="mCron" placeholder="Cron expression (optional)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px">
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button onclick="hideSubmitModal()" style="background:var(--border);color:var(--text);border:none;padding:8px 20px;border-radius:6px;cursor:pointer">Cancel</button>
+        <button onclick="submitTask()" style="background:var(--success);color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-weight:600">Submit</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/api';
+let currentTab = 'tasks';
+let chart = null;
+
+async function api(path, opts) {
+  const r = await fetch(API + path, opts);
+  return r.json();
+}
+
+async function loadTasks() {
+  const search = document.getElementById('searchBox').value;
+  const status = document.getElementById('filterStatus').value;
+  let url = `/tasks?limit=200`;
+  if (status) url += `&status=${status}`;
+  if (search) url += `&search=${encodeURIComponent(search)}`;
+  const data = await api(url);
+  const list = document.getElementById('taskList');
+  if (!data.tasks || data.tasks.length === 0) {
+    list.innerHTML = '<div class="empty">No tasks found</div>';
+    return;
+  }
+  list.innerHTML = data.tasks.map(t => `
+    <div class="task-card">
+      <div class="top">
+        <div><span class="task-type">${esc(t.task_type)}</span> <span class="badge ${t.priority}">${t.priority}</span></div>
+        <span class="badge ${t.status}">${t.status}</span>
+      </div>
+      <div class="task-id">${t.task_id}</div>
+      <div class="meta">
+        ${t.correlation_id ? `Corr: ${esc(t.correlation_id)} · ` : ''}
+        Retries: ${t.retry_count}/${t.max_retries}
+        ${t.worker_id ? ` · Worker: ${esc(t.worker_id)}` : ''}
+        ${t.error_message ? ` · Error: ${esc(t.error_message).substring(0,80)}` : ''}
+        · ${timeAgo(t.submitted_at)}
+      </div>
+      ${(t.status === 'queued' || t.status === 'retrying') ? `<div class="actions"><button class="btn-cancel" onclick="cancelTask('${t.task_id}')">Cancel</button></div>` : ''}
+      ${(t.status === 'dead' || t.status === 'failed') ? `<div class="actions"><button class="btn-retry" onclick="retryTask('${t.task_id}')">Retry</button></div>` : ''}
+    </div>
+  `).join('');
+}
+
+async function loadDeadLetters() {
+  const data = await api('/dead-letters');
+  const list = document.getElementById('taskList');
+  if (!data.tasks || data.tasks.length === 0) {
+    list.innerHTML = '<div class="empty">No dead letters</div>';
+    return;
+  }
+  list.innerHTML = data.tasks.map(t => `
+    <div class="task-card">
+      <div class="top">
+        <span class="task-type">${esc(t.task_type)}</span>
+        <span class="badge dead">Dead</span>
+      </div>
+      <div class="task-id">${t.task_id}</div>
+      <div class="meta">Retries: ${t.retry_count}/${t.max_retries} · ${esc(t.error_message || '').substring(0,100)} · ${timeAgo(t.finished_at)}</div>
+      <div class="actions"><button class="btn-retry" onclick="retryDeadLetter('${t.task_id}')">Retry</button></div>
+    </div>
+  `).join('');
+}
+
+async function loadStats() {
+  const data = await api('/stats');
+  const grid = document.getElementById('statsGrid');
+  const statuses = ['queued','running','completed','failed','retrying','dead'];
+  grid.innerHTML = statuses.map(s => `
+    <div class="stat-card ${s}">
+      <div class="num">${data.by_status[s] || 0}</div>
+      <div class="label">${s}</div>
+    </div>
+  `).join('');
+  drawChart(data.by_status);
+}
+
+async function loadWorkers() {
+  const data = await api('/workers');
+  const el = document.getElementById('workerList');
+  if (!data.workers || data.workers.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px">No workers online</div>';
+    return;
+  }
+  el.innerHTML = data.workers.map(w => `
+    <div class="worker-card">
+      <div class="wid">${esc(w.worker_id)} <span class="badge ${w.status === 'busy' ? 'running' : 'completed'}">${w.status}</span></div>
+      <div class="wmeta">Completed: ${w.tasks_completed} · Failed: ${w.tasks_failed}${w.current_task_id ? ' · Task: ' + w.current_task_id.substring(0,8) : ''}</div>
+    </div>
+  `).join('');
+}
+
+async function loadRegistry() {
+  const data = await api('/registry');
+  document.getElementById('registryList').textContent = data.task_types.join(', ') || '(none)';
+}
+
+function drawChart(byStatus) {
+  const canvas = document.getElementById('chartCanvas');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.offsetWidth * dpr;
+  canvas.height = 160 * dpr;
+  ctx.scale(dpr, dpr);
+  const w = canvas.offsetWidth, h = 160;
+  ctx.clearRect(0, 0, w, h);
+  const entries = [
+    ['queued', '#3b82f6'], ['running', '#f59e0b'], ['completed', '#22c55e'],
+    ['failed', '#ef4444'], ['retrying', '#a855f7'], ['dead', '#ef4444']
+  ];
+  const total = entries.reduce((s, [k]) => s + (byStatus[k] || 0), 0);
+  if (total === 0) { ctx.fillStyle = '#64748b'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('No data', w/2, h/2); return; }
+  let angle = -Math.PI / 2;
+  const cx = 70, cy = h/2, r = 50;
+  entries.forEach(([k, color]) => {
+    const v = byStatus[k] || 0;
+    if (v === 0) return;
+    const slice = (v / total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r, angle, angle + slice);
+    ctx.fillStyle = color;
+    ctx.fill();
+    angle += slice;
+  });
+  ctx.beginPath(); ctx.arc(cx, cy, 24, 0, Math.PI*2); ctx.fillStyle = '#1e293b'; ctx.fill();
+  ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(total, cx, cy);
+  let ly = 20;
+  ctx.textAlign = 'left'; ctx.font = '12px sans-serif';
+  entries.forEach(([k, color]) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(w - 140, ly - 4, 10, 10);
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(`${k}: ${byStatus[k] || 0}`, w - 124, ly + 3);
+    ly += 22;
+  });
+}
+
+async function cancelTask(id) {
+  await api(`/tasks/${id}/cancel`, { method: 'POST' });
+  refresh();
+}
+
+async function retryTask(id) {
+  await api(`/tasks/${id}/retry`, { method: 'POST' });
+  refresh();
+}
+
+async function retryDeadLetter(id) {
+  await api(`/dead-letters/${id}/retry`, { method: 'POST' });
+  refresh();
+}
+
+function switchTab(tab, btn) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (tab === 'dead') loadDeadLetters();
+  else loadTasks();
+}
+
+function showSubmitModal() {
+  document.getElementById('submitModal').style.display = 'flex';
+}
+
+function hideSubmitModal() {
+  document.getElementById('submitModal').style.display = 'none';
+}
+
+async function submitTask() {
+  const task_type = document.getElementById('mType').value.trim();
+  if (!task_type) return alert('Task type required');
+  let params = {};
+  try { params = JSON.parse(document.getElementById('mParams').value || '{}'); } catch {}
+  const body = {
+    task_type,
+    params,
+    priority: document.getElementById('mPriority').value,
+    correlation_id: document.getElementById('mCorrelation').value || null,
+    cron_expr: document.getElementById('mCron').value || null,
+  };
+  await api('/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  hideSubmitModal();
+  document.getElementById('mType').value = '';
+  document.getElementById('mParams').value = '';
+  document.getElementById('mCorrelation').value = '';
+  document.getElementById('mCron').value = '';
+  refresh();
+}
+
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const d = new Date(iso), now = new Date();
+  const s = Math.floor((now - d) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+function refresh() {
+  if (currentTab === 'dead') loadDeadLetters();
+  else loadTasks();
+  loadStats();
+  loadWorkers();
+}
+
+function connectSSE() {
+  const es = new EventSource(API + '/stream');
+  const dot = document.getElementById('sseStatus');
+  const label = document.getElementById('sseLabel');
+  es.onopen = () => { dot.className = 'status-dot connected'; label.textContent = 'Live'; };
+  es.onerror = () => { dot.className = 'status-dot disconnected'; label.textContent = 'Disconnected'; };
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.event && data.event.startsWith('task_')) refresh();
+      if (data.event === 'task_completed' || data.event === 'task_failed') loadWorkers();
+    } catch {}
+  };
+}
+
+loadRegistry();
+refresh();
+connectSSE();
+setInterval(() => { loadWorkers(); loadStats(); }, 10000);
+</script>
+</body>
+</html>
